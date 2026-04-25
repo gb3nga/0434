@@ -1,4 +1,5 @@
 # 04:23
+![Screenshot](screenshot.png)
 
 **A surveillance thriller built solo in 24 hours for [Gamedev.js Jam 2026](https://itch.io/jam/gamedevjs-2026).**
 
