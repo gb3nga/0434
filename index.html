@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>04:23</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+    <style>
+        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: monospace; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+<script>
+// ============================================================
+// 04:23 — Gamedev.js Jam 2026 — by @toluszn
+// ============================================================
+
+const config = {
+    type: Phaser.AUTO,
+    width: 1280,
+    height: 760,
+    backgroundColor: '#05080c',
+    scene: [TitleScene, HowToPlayScene, CreditsScene, IntroScene, BriefingScene, GameScene, GameOverScene],
+    parent: 'game'
+};
+
+const GAME = {
+    currentLevel: 1,
+    totalScore: 0,
+    totalMissed: 0,
+    victory: false
+};
+
+const LEVELS = [
+    {
+        num: 1, title: "THE BRIEFING",
+        story: [
+            "The AI flagged you as a viable replacement.",
+            "Class-A intruders register as ALL BLACK on the system.",
+            "Confirm each one. The machine is counting on you."
+        ],
+        rule: "FLAG: any all-black outfit",
+        rules: { black: true },
+        duration: 60, decoy: 0, speed: 1, minScore: 50,
+        spawnCooldownMin: 2000, spawnCooldownRange: 2000, musicIntensity: 1
+    },
+    {
+        num: 2, title: "SUSPICIOUS ACTIVITY",
+        story: [
+            "The system detected a new threat signature.",
+            "Coordinated trios — RED, GREEN, BLUE — registering as hostile.",
+            "Continue flagging Class-A intruders as well."
+        ],
+        rule: "FLAG: black • R-G-B trios",
+        rules: { black: true, rgb: true },
+        duration: 90, decoy: 0.3, speed: 1.1, minScore: 80,
+        spawnCooldownMin: 1200, spawnCooldownRange: 1500, musicIntensity: 2
+    },
+    {
+        num: 3, title: "THE PATTERN",
+        story: [
+            "Intel update — second pattern emerged.",
+            "RED, RED, GREEN. They're coordinating.",
+            "More cells deployed tonight. Stay sharp."
+        ],
+        rule: "FLAG: black • R-G-B trios • R-R-G trios",
+        rules: { black: true, rgb: true, rrg: true },
+        duration: 90, decoy: 0.4, speed: 1.15, minScore: 110,
+        spawnCooldownMin: 1000, spawnCooldownRange: 1500, musicIntensity: 3
+    },
+    {
+        num: 4, title: "DECOYS",
+        story: [
+            "They know we're onto them.",
+            "Some wear fake patterns to throw you off.",
+            "Only flag the EXACT sequences."
+        ],
+        rule: "Same rules — but watch for decoys",
+        rules: { black: true, rgb: true, rrg: true },
+        duration: 90, decoy: 0.65, speed: 1.2, minScore: 140,
+        spawnCooldownMin: 900, spawnCooldownRange: 1300, musicIntensity: 4
+    },
+    {
+        num: 5, title: "THE YELLOW THREAT",
+        story: [
+            "New intel — a lone operative wears YELLOW.",
+            "Solo yellow = hostile. Flag any yellow walking alone.",
+            "All previous rules still apply."
+        ],
+        rule: "+ FLAG: solo yellow",
+        rules: { black: true, rgb: true, rrg: true, soloYellow: true },
+        duration: 90, decoy: 0.6, speed: 1.25, minScore: 170,
+        spawnCooldownMin: 800, spawnCooldownRange: 1200, musicIntensity: 5
+    },
+    {
+        num: 6, title: "PAIRS",
+        story: [
+            "They're sending pairs now.",
+            "Two BLUES walking together = reconnaissance team.",
+            "Flag every BLUE-BLUE pair you see."
+        ],
+        rule: "+ FLAG: blue-blue pairs",
+        rules: { black: true, rgb: true, rrg: true, soloYellow: true, bluePair: true },
+        duration: 90, decoy: 0.65, speed: 1.3, minScore: 200,
+        spawnCooldownMin: 700, spawnCooldownRange: 1100, musicIntensity: 6
+    },
+    {
+        num: 7, title: "FINAL WAVE",
+        story: [
+            "The system is overwhelmed.",
+            "Network throughput exceeded. The machine is failing.",
+            "You ARE the network now. Don't let them through."
+        ],
+        rule: "All rules active. Endurance mode.",
+        rules: { black: true, rgb: true, rrg: true, soloYellow: true, bluePair: true },
+        duration: -1, decoy: 0.7, speed: 1.45, minScore: 0,
+        spawnCooldownMin: 600, spawnCooldownRange: 1000, musicIntensity: 7
+    }
+];
+
+// ===== AUDIO =====
+let audioCtx;
+let musicNodes = [];
+let musicInterval = null;
+let musicBeat = 0;
+let currentMusicIntensity = 0;
+let musicMuted = false;
+let masterMusicGain = null;
+
+function initAudio() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        masterMusicGain = audioCtx.createGain();
+        masterMusicGain.gain.value = musicMuted ? 0 : 1;
+        masterMusicGain.connect(audioCtx.destination);
+        startAmbient();
+    }
+}
+
+function toggleMute() {
+    musicMuted = !musicMuted;
+    if (masterMusicGain) masterMusicGain.gain.value = musicMuted ? 0 : 1;
+    return musicMuted;
+}
+
+function playBeep(freq, duration, type = 'square', volume = 0.1) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = volume;
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+function startAmbient() {
+    if (!audioCtx) return;
+    const hum = audioCtx.createOscillator();
+    const humGain = audioCtx.createGain();
+    hum.type = 'sine';
+    hum.frequency.value = 55;
+    humGain.gain.value = 0.04;
+    hum.connect(humGain);
+    humGain.connect(audioCtx.destination);
+    hum.start();
+    
+    const hum2 = audioCtx.createOscillator();
+    const hum2Gain = audioCtx.createGain();
+    hum2.type = 'sine';
+    hum2.frequency.value = 110;
+    hum2Gain.gain.value = 0.015;
+    hum2.connect(hum2Gain);
+    hum2Gain.connect(audioCtx.destination);
+    hum2.start();
+    
+    setInterval(() => {
+        if (!audioCtx) return;
+        if (Math.random() < 0.3) playBeep(80 + Math.random() * 40, 0.15, 'triangle', 0.04);
+    }, 5000);
+}
+
+function startMusic(intensity) {
+    if (currentMusicIntensity === intensity && musicInterval) return;
+    stopMusic();
+    currentMusicIntensity = intensity;
+    if (!audioCtx || intensity < 1) return;
+    musicBeat = 0;
+    const bpm = 90 + (intensity - 1) * 8;
+    const beatMs = 60000 / bpm / 4;
+    musicInterval = setInterval(() => {
+        if (!audioCtx) return;
+        playMusicStep(musicBeat, intensity);
+        musicBeat = (musicBeat + 1) % 32;
+    }, beatMs);
+}
+
+function stopMusic() {
+    if (musicInterval) {
+        clearInterval(musicInterval);
+        musicInterval = null;
+    }
+    musicNodes.forEach(n => { try { n.stop(); } catch(e){} });
+    musicNodes = [];
+}
+
+function playMusicStep(beat, intensity) {
+    if (beat % 8 === 0) kickDrum(0.18);
+    if (intensity >= 2 && beat % 4 === 0) hihat(0.05);
+    if (intensity >= 2 && (beat === 8 || beat === 24)) snare(0.12);
+    
+    const bassPattern = [0, null, null, 0, null, 3, null, null, 0, null, null, 5, null, 3, null, null,
+                        0, null, null, 0, null, 3, null, null, 7, null, 5, null, 3, null, 0, null];
+    if (intensity >= 1 && bassPattern[beat] !== null) {
+        bassNote(55 * Math.pow(2, bassPattern[beat]/12), 0.18, 0.1);
+    }
+    
+    if (intensity >= 3 && beat % 16 === 0) leadStab(220, 0.4, 0.08);
+    if (intensity >= 4 && beat === 12) leadStab(330, 0.3, 0.07);
+    if (intensity >= 5 && beat === 20) leadStab(440, 0.2, 0.06);
+    if (intensity >= 6 && beat === 0) padSweep(0.06);
+    if (intensity >= 7 && beat === 14) playBeep(880, 0.05, 'square', 0.06);
+}
+
+function kickDrum(volume) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.1);
+    gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(masterMusicGain || audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.2);
+}
+
+function snare(volume) {
+    if (!audioCtx) return;
+    const noise = audioCtx.createBufferSource();
+    const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 1500;
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(masterMusicGain || audioCtx.destination);
+    noise.start();
+    noise.stop(audioCtx.currentTime + 0.1);
+}
+
+function hihat(volume) {
+    if (!audioCtx) return;
+    const noise = audioCtx.createBufferSource();
+    const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.05, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 7000;
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.04);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(masterMusicGain || audioCtx.destination);
+    noise.start();
+    noise.stop(audioCtx.currentTime + 0.05);
+}
+
+function bassNote(freq, duration, volume) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 400;
+    osc.type = 'sawtooth';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(masterMusicGain || audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration + 0.05);
+}
+
+function leadStab(freq, duration, volume) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(masterMusicGain || audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration + 0.05);
+}
+
+function padSweep(volume) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(110, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(220, audioCtx.currentTime + 1.5);
+    gain.gain.setValueAtTime(0, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(volume, audioCtx.currentTime + 0.5);
+    gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.5);
+    osc.connect(gain);
+    gain.connect(masterMusicGain || audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 1.6);
+}
+
+function soundCorrect() {
+    playBeep(700, 0.08, 'square', 0.15);
+    setTimeout(() => playBeep(1100, 0.1, 'square', 0.15), 60);
+}
+function soundWrong() {
+    playBeep(180, 0.15, 'sawtooth', 0.18);
+    setTimeout(() => playBeep(140, 0.2, 'sawtooth', 0.18), 100);
+}
+function soundMissed() { playBeep(90, 0.4, 'square', 0.22); }
+function soundLevelUp() {
+    playBeep(500, 0.08, 'square', 0.18);
+    setTimeout(() => playBeep(700, 0.08, 'square', 0.18), 100);
+    setTimeout(() => playBeep(1000, 0.18, 'square', 0.18), 200);
+}
+function soundType() { playBeep(800 + Math.random() * 400, 0.02, 'square', 0.05); }
+function soundGameOver() {
+    playBeep(400, 0.3, 'sawtooth', 0.22);
+    setTimeout(() => playBeep(280, 0.3, 'sawtooth', 0.22), 250);
+    setTimeout(() => playBeep(180, 0.6, 'sawtooth', 0.22), 500);
+}
+function soundAlarm() {
+    let count = 0;
+    const interval = setInterval(() => {
+        playBeep(880, 0.2, 'square', 0.15);
+        count++;
+        if (count > 5) clearInterval(interval);
+    }, 300);
+}
+
+function radioVoice(text) {
+    if (!('speechSynthesis' in window)) return;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.95; utter.pitch = 0.7; utter.volume = 0.5;
+    const voices = speechSynthesis.getVoices();
+    const maleVoice = voices.find(v => /male|david|mark|daniel|alex/i.test(v.name)) || voices[0];
+    if (maleVoice) utter.voice = maleVoice;
+    speechSynthesis.speak(utter);
+}
+
+// ===========================================================
+// TITLE SCENE
+// ===========================================================
+function TitleScene() { Phaser.Scene.call(this, { key: 'TitleScene' }); }
+TitleScene.prototype = Object.create(Phaser.Scene.prototype);
+TitleScene.prototype.constructor = TitleScene;
+
+TitleScene.prototype.create = function() {
+    const scene = this;
+    this.cameras.main.fadeIn(800, 0, 0, 0);
+    
+    // Dark room background
+    this.add.rectangle(640, 380, 1280, 760, 0x05080c);
+    
+    // Background mini monitors flickering
+    for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 6; c++) {
+            const mx = 100 + c * 200;
+            const my = 80 + r * 130;
+            const mon = this.add.rectangle(mx, my, 160, 100, 0x14181f);
+            mon.setStrokeStyle(2, 0x2a3a4a);
+            const screen = this.add.rectangle(mx, my, 144, 86, 0x2a3642);
+            screen.setAlpha(0.4 + Math.random() * 0.3);
+            
+            // Flicker
+            this.tweens.add({
+                targets: screen,
+                alpha: 0.2,
+                duration: 400 + Math.random() * 800,
+                yoyo: true,
+                repeat: -1
+            });
+            
+            // Scan lines
+            for (let s = 0; s < 3; s++) {
+                this.add.rectangle(mx, my - 35 + s * 30, 144, 1, 0x000000, 0.3);
+            }
+            
+            // Tiny REC dot
+            const rec = this.add.circle(mx + 60, my - 35, 2, 0xff3030);
+            this.tweens.add({ targets: rec, alpha: 0.2, duration: 800, yoyo: true, repeat: -1 });
+        }
+    }
+    
+    // Dim overlay over background
+    this.add.rectangle(640, 380, 1280, 760, 0x000000, 0.5);
+    
+    // GIANT TITLE
+    const title = this.add.text(640, 220, '04:23', {
+        fontSize: '160px', color: '#e0c060', fontFamily: 'monospace',
+        stroke: '#000000', strokeThickness: 8
+    }).setOrigin(0.5);
+    
+    // Subtle title pulse
+    this.tweens.add({
+        targets: title,
+        scaleX: 1.02,
+        scaleY: 1.02,
+        duration: 1500,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut'
+    });
+    
+    // Subtitle
+    this.add.text(640, 320, 'YOU ARE THE MACHINE.', {
+        fontSize: '20px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 350, 'A surveillance thriller', {
+        fontSize: '13px', color: '#607080', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    // Buttons
+    this.makeMenuButton(640, 440, 'PLAY', () => {
+        initAudio();
+        scene.cameras.main.fadeOut(500, 0, 0, 0);
+        scene.time.delayedCall(600, () => scene.scene.start('IntroScene'));
+    });
+    
+    this.makeMenuButton(640, 510, 'HOW TO PLAY', () => {
+        initAudio();
+        scene.cameras.main.fadeOut(400, 0, 0, 0);
+        scene.time.delayedCall(500, () => scene.scene.start('HowToPlayScene'));
+    });
+    
+    this.makeMenuButton(640, 580, 'CREDITS', () => {
+        initAudio();
+        scene.cameras.main.fadeOut(400, 0, 0, 0);
+        scene.time.delayedCall(500, () => scene.scene.start('CreditsScene'));
+    });
+    
+    // Footer
+    this.add.text(640, 700, 'GAMEDEV.JS JAM 2026 — THEME: MACHINES', {
+        fontSize: '12px', color: '#3a4252', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    this.add.text(640, 720, 'BY @TOLUSZN', {
+        fontSize: '11px', color: '#3a4252', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+};
+
+TitleScene.prototype.makeMenuButton = function(x, y, label, onClick) {
+    const scene = this;
+    const bg = this.add.rectangle(x, y, 280, 50, 0x14181f).setInteractive({ useHandCursor: true });
+    bg.setStrokeStyle(2, 0x3a4252);
+    
+    const text = this.add.text(x, y, label, {
+        fontSize: '20px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    bg.on('pointerover', () => {
+        bg.setFillStyle(0x1a2230);
+        bg.setStrokeStyle(2, 0xe0c060);
+        text.setColor('#e0c060');
+        playBeep(800, 0.03, 'square', 0.06);
+    });
+    bg.on('pointerout', () => {
+        bg.setFillStyle(0x14181f);
+        bg.setStrokeStyle(2, 0x3a4252);
+        text.setColor('#a0b0c0');
+    });
+    bg.on('pointerdown', () => {
+        playBeep(600, 0.05, 'square', 0.12);
+        onClick();
+    });
+};
+
+// ===========================================================
+// HOW TO PLAY SCENE
+// ===========================================================
+function HowToPlayScene() { Phaser.Scene.call(this, { key: 'HowToPlayScene' }); }
+HowToPlayScene.prototype = Object.create(Phaser.Scene.prototype);
+HowToPlayScene.prototype.constructor = HowToPlayScene;
+
+HowToPlayScene.prototype.create = function() {
+    const scene = this;
+    this.cameras.main.fadeIn(400, 0, 0, 0);
+    this.add.rectangle(640, 380, 1280, 760, 0x05080c);
+    
+    this.add.text(640, 60, 'HOW TO PLAY', {
+        fontSize: '40px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 110, 'You are the operator. The system needs you.', {
+        fontSize: '14px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    // Box
+    this.add.rectangle(640, 410, 900, 500, 0x0a0e14);
+    this.add.rectangle(640, 410, 900, 500).setStrokeStyle(2, 0x3a4252);
+    
+    const lines = [
+        { txt: '▸ WATCH 9 CAMERAS', color: '#e0c060', size: 18 },
+        { txt: 'Suspicious people walk through the feeds. Your job is to catch them.', color: '#c0d0e0', size: 13 },
+        { txt: '', size: 8 },
+        { txt: '▸ CLICK A FEED TO FLAG', color: '#e0c060', size: 18 },
+        { txt: 'When you see a violator on a camera, click anywhere on that feed.', color: '#c0d0e0', size: 13 },
+        { txt: '', size: 8 },
+        { txt: '▸ KNOW THE PATTERNS (rules unlock per level)', color: '#e0c060', size: 18 },
+        { txt: '• ALL BLACK outfit = intruder. Always flag.', color: '#c0d0e0', size: 13 },
+        { txt: '• RED-GREEN-BLUE trio walking together = hostile.', color: '#c0d0e0', size: 13 },
+        { txt: '• RED-RED-GREEN trio = hostile.', color: '#c0d0e0', size: 13 },
+        { txt: '• SOLO YELLOW (alone on screen) = hostile (Level 5+).', color: '#c0d0e0', size: 13 },
+        { txt: '• BLUE-BLUE pair = recon team (Level 6+).', color: '#c0d0e0', size: 13 },
+        { txt: '', size: 8 },
+        { txt: '▸ WATCH FOR DECOYS', color: '#e08080', size: 18 },
+        { txt: 'Wrong patterns (R-R-B, G-B-R, etc) are decoys. Do NOT flag them.', color: '#c0d0e0', size: 13 },
+        { txt: 'False flags = -5 score. Be sure before you click.', color: '#c0d0e0', size: 13 },
+        { txt: '', size: 8 },
+        { txt: '▸ HIT THE TARGET', color: '#e0c060', size: 18 },
+        { txt: 'Each level has a target score. Miss it → repeat shift.', color: '#c0d0e0', size: 13 },
+        { txt: 'Miss 10 black-outfit intruders → game over.', color: '#c0d0e0', size: 13 },
+        { txt: '', size: 8 },
+        { txt: '▸ CONTROLS', color: '#e0c060', size: 18 },
+        { txt: 'P or ESC — pause   •   Click PAUSE / SOUND in top bar', color: '#c0d0e0', size: 13 }
+    ];
+    
+    let yPos = 180;
+    lines.forEach(line => {
+        if (line.txt) {
+            this.add.text(640, yPos, line.txt, {
+                fontSize: line.size + 'px', color: line.color, fontFamily: 'monospace'
+            }).setOrigin(0.5);
+        }
+        yPos += line.size + 6;
+    });
+    
+    // Back button
+    this.makeBackButton(640, 700);
+};
+
+HowToPlayScene.prototype.makeBackButton = function(x, y) {
+    const scene = this;
+    const bg = this.add.rectangle(x, y, 200, 40, 0x14181f).setInteractive({ useHandCursor: true });
+    bg.setStrokeStyle(2, 0x3a4252);
+    const text = this.add.text(x, y, '◂ BACK TO MENU', {
+        fontSize: '14px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    bg.on('pointerover', () => {
+        bg.setStrokeStyle(2, 0xe0c060);
+        text.setColor('#e0c060');
+    });
+    bg.on('pointerout', () => {
+        bg.setStrokeStyle(2, 0x3a4252);
+        text.setColor('#a0b0c0');
+    });
+    bg.on('pointerdown', () => {
+        playBeep(600, 0.05, 'square', 0.12);
+        scene.cameras.main.fadeOut(400, 0, 0, 0);
+        scene.time.delayedCall(500, () => scene.scene.start('TitleScene'));
+    });
+    
+    // ESC also goes back
+    scene.input.keyboard.once('keydown-ESC', () => {
+        scene.cameras.main.fadeOut(400, 0, 0, 0);
+        scene.time.delayedCall(500, () => scene.scene.start('TitleScene'));
+    });
+};
+
+// ===========================================================
+// CREDITS SCENE
+// ===========================================================
+function CreditsScene() { Phaser.Scene.call(this, { key: 'CreditsScene' }); }
+CreditsScene.prototype = Object.create(Phaser.Scene.prototype);
+CreditsScene.prototype.constructor = CreditsScene;
+
+CreditsScene.prototype.create = function() {
+    const scene = this;
+    this.cameras.main.fadeIn(400, 0, 0, 0);
+    this.add.rectangle(640, 380, 1280, 760, 0x05080c);
+    
+    this.add.text(640, 60, 'CREDITS', {
+        fontSize: '40px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 110, '— a solo project —', {
+        fontSize: '14px', color: '#607080', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    // Main credit
+    this.add.text(640, 200, 'DESIGN, CODE & EVERYTHING ELSE', {
+        fontSize: '16px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 240, '@TOLUSZN', {
+        fontSize: '36px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    // Built with
+    this.add.text(640, 340, 'BUILT WITH', {
+        fontSize: '14px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 370, 'PHASER 3 • WEB AUDIO API', {
+        fontSize: '14px', color: '#c0d0e0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 395, 'Music synthesized live in browser. No audio files used.', {
+        fontSize: '11px', color: '#607080', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    // Made for
+    this.add.text(640, 480, 'MADE FOR', {
+        fontSize: '14px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 510, 'GAMEDEV.JS JAM 2026', {
+        fontSize: '20px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 540, 'Theme: Machines', {
+        fontSize: '14px', color: '#c0d0e0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    // Thanks
+    this.add.text(640, 620, 'Thanks for playing.', {
+        fontSize: '14px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 645, 'The machine appreciates your service.', {
+        fontSize: '12px', color: '#607080', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.makeBackButton(640, 710);
+};
+
+CreditsScene.prototype.makeBackButton = HowToPlayScene.prototype.makeBackButton;
+
+// END OF PART 1 — DO NOT RUN YET
+// ===========================================================
+// INTRO SCENE
+// ===========================================================
+function IntroScene() { Phaser.Scene.call(this, { key: 'IntroScene' }); }
+IntroScene.prototype = Object.create(Phaser.Scene.prototype);
+IntroScene.prototype.constructor = IntroScene;
+
+IntroScene.prototype.create = function() {
+    const scene = this;
+    this.cameras.main.fadeIn(500, 0, 0, 0);
+    this.add.rectangle(640, 380, 1280, 760, 0x000000);
+    scene.runIntro();
+};
+
+IntroScene.prototype.runIntro = function() {
+    const scene = this;
+    let delay = 500;
+    
+    this.time.delayedCall(0, () => {
+        for (let i = 0; i < 200; i++) {
+            scene.add.rectangle(
+                Math.random() * 1280, Math.random() * 760,
+                1 + Math.random() * 2, 1 + Math.random() * 2,
+                0xffffff, 0.1 + Math.random() * 0.3
+            );
+        }
+        playBeep(200, 0.5, 'sawtooth', 0.1);
+    });
+    
+    const lines = [
+        { text: '> SECTOR 7 SURVEILLANCE NETWORK — ONLINE', color: '#4a9850' },
+        { text: '> AI CLASSIFIER STATUS: COMPROMISED', color: '#a0b0c0' },
+        { text: '> MANUAL OVERRIDE REQUIRED', color: '#a0b0c0' },
+        { text: '> OPERATOR. YOU ARE NOW THE MACHINE.', color: '#e08080' }
+    ];
+    
+    let yPos = 220;
+    lines.forEach(line => {
+        const lineY = yPos;
+        const lineText = line.text;
+        const lineColor = line.color;
+        scene.time.delayedCall(delay, () => {
+            scene.typeText(120, lineY, lineText, lineColor, 40);
+        });
+        delay += lineText.length * 40 + 800;
+        yPos += 55;
+    });
+    
+    delay += 1000;
+    
+    scene.time.delayedCall(delay, () => {
+        scene.add.rectangle(640, 380, 1280, 760, 0x000000);
+        scene.flickerMonitors();
+    });
+    delay += 3500;
+    
+    scene.time.delayedCall(delay, () => {
+        const tagline = scene.add.text(640, 380, 'YOU ARE THE MACHINE.', {
+            fontSize: '34px', color: '#e0c060', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3
+        }).setOrigin(0.5).setAlpha(0);
+        scene.tweens.add({ targets: tagline, alpha: 1, duration: 1500 });
+        
+        scene.time.delayedCall(2500, () => {
+            const subtag = scene.add.text(640, 430, '— 04:23 —', {
+                fontSize: '16px', color: '#607080', fontFamily: 'monospace'
+            }).setOrigin(0.5).setAlpha(0);
+            scene.tweens.add({ targets: subtag, alpha: 1, duration: 1000 });
+        });
+        
+        scene.time.delayedCall(4500, () => {
+            scene.cameras.main.fadeOut(800, 0, 0, 0);
+            scene.time.delayedCall(900, () => scene.scene.start('BriefingScene'));
+        });
+    });
+    
+    // Skip with click
+    scene.time.delayedCall(2000, () => {
+        scene.input.once('pointerdown', () => {
+            scene.cameras.main.fadeOut(400, 0, 0, 0);
+            scene.time.delayedCall(500, () => scene.scene.start('BriefingScene'));
+        });
+    });
+};
+
+IntroScene.prototype.typeText = function(x, y, text, color, charDelay) {
+    const txt = this.add.text(x, y, '', { fontSize: '20px', color: color, fontFamily: 'monospace' });
+    let i = 0;
+    const interval = setInterval(() => {
+        if (i < text.length) {
+            txt.setText(text.substring(0, i + 1));
+            if (i % 3 === 0) soundType();
+            i++;
+        } else {
+            clearInterval(interval);
+        }
+    }, charDelay);
+};
+
+IntroScene.prototype.flickerMonitors = function() {
+    const scene = this;
+    const positions = [];
+    for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+            positions.push({ x: 290 + c * 320, y: 180 + r * 200 });
+        }
+    }
+    Phaser.Utils.Array.Shuffle(positions);
+    positions.forEach((pos, idx) => {
+        scene.time.delayedCall(idx * 200, () => {
+            const mon = scene.add.rectangle(pos.x, pos.y, 280, 160, 0x14181f);
+            mon.setStrokeStyle(3, 0x3a4652);
+            const screen = scene.add.rectangle(pos.x, pos.y, 260, 140, 0x2a3642).setAlpha(0);
+            playBeep(400 + Math.random() * 200, 0.05, 'square', 0.06);
+            scene.tweens.add({
+                targets: screen, alpha: 1, duration: 300,
+                onComplete: () => {
+                    for (let s = 0; s < 5; s++) {
+                        scene.add.rectangle(pos.x, pos.y - 60 + s * 30, 256, 1, 0x000000, 0.15);
+                    }
+                    const rec = scene.add.circle(pos.x - 110, pos.y - 60, 3, 0xff3030);
+                    scene.tweens.add({ targets: rec, alpha: 0.3, duration: 600, yoyo: true, repeat: -1 });
+                }
+            });
+        });
+    });
+};
+
+// ===========================================================
+// BRIEFING SCENE
+// ===========================================================
+function BriefingScene() { Phaser.Scene.call(this, { key: 'BriefingScene' }); }
+BriefingScene.prototype = Object.create(Phaser.Scene.prototype);
+BriefingScene.prototype.constructor = BriefingScene;
+
+BriefingScene.prototype.create = function() {
+    const scene = this;
+    const level = LEVELS[GAME.currentLevel - 1];
+    
+    startMusic(level.musicIntensity);
+    
+    this.cameras.main.fadeIn(500, 0, 0, 0);
+    this.add.rectangle(640, 380, 1280, 760, 0x05080c);
+    
+    this.add.rectangle(640, 60, 1280, 80, 0x14181f);
+    this.add.rectangle(640, 100, 1280, 1, 0x3a4652);
+    
+    this.add.text(640, 35, '— TRANSMISSION INCOMING —', {
+        fontSize: '14px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    this.add.text(640, 70, 'LEVEL ' + level.num + ': ' + level.title, {
+        fontSize: '28px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    const boxY = 200;
+    this.add.rectangle(640, boxY + 100, 800, 240, 0x0a0e14);
+    this.add.rectangle(640, boxY + 100, 800, 240).setStrokeStyle(2, 0x3a4652);
+    
+    let typeDelay = 500;
+    level.story.forEach((line, idx) => {
+        scene.time.delayedCall(typeDelay, () => {
+            scene.typeStoryLine(240, boxY + 30 + idx * 50, line);
+        });
+        typeDelay += line.length * 35 + 500;
+    });
+    
+    scene.time.delayedCall(typeDelay + 500, () => {
+        scene.add.rectangle(640, 480, 700, 60, 0x1a2a1a);
+        scene.add.rectangle(640, 480, 700, 60).setStrokeStyle(2, 0x4a9850);
+        scene.add.text(640, 470, 'OBJECTIVE', {
+            fontSize: '12px', color: '#4a9850', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        scene.add.text(640, 492, level.rule, {
+            fontSize: '16px', color: '#a0e0a0', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        if (level.minScore > 0) {
+            scene.add.text(640, 535, 'TARGET SCORE: ' + level.minScore, {
+                fontSize: '16px', color: '#e0c060', fontFamily: 'monospace'
+            }).setOrigin(0.5);
+        }
+        playBeep(800, 0.1, 'square', 0.1);
+    });
+    
+    if (GAME.currentLevel > 1) {
+        scene.time.delayedCall(typeDelay + 800, () => {
+            scene.add.text(640, 580, 'TOTAL SCORE: ' + GAME.totalScore, {
+                fontSize: '14px', color: '#a0b0c0', fontFamily: 'monospace'
+            }).setOrigin(0.5);
+        });
+    }
+    
+    scene.time.delayedCall(typeDelay + 1500, () => {
+        const prompt = scene.add.text(640, 650, '[ PRESS SPACE OR CLICK TO BEGIN SHIFT ]', {
+            fontSize: '20px', color: '#ffffff', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        scene.tweens.add({ targets: prompt, alpha: 0.3, duration: 600, yoyo: true, repeat: -1 });
+        
+        const startGame = () => {
+            scene.cameras.main.fadeOut(400, 0, 0, 0);
+            scene.time.delayedCall(500, () => scene.scene.start('GameScene'));
+        };
+        scene.input.keyboard.once('keydown-SPACE', startGame);
+        scene.input.once('pointerdown', startGame);
+    });
+};
+
+BriefingScene.prototype.typeStoryLine = function(x, y, text) {
+    const txt = this.add.text(x, y, '', { fontSize: '18px', color: '#c0d0e0', fontFamily: 'monospace' });
+    let i = 0;
+    const interval = setInterval(() => {
+        if (i < text.length) {
+            txt.setText(text.substring(0, i + 1));
+            if (i % 4 === 0) soundType();
+            i++;
+        } else {
+            clearInterval(interval);
+        }
+    }, 35);
+};
+
+// ===========================================================
+// GAME SCENE
+// ===========================================================
+function GameScene() { Phaser.Scene.call(this, { key: 'GameScene' }); }
+GameScene.prototype = Object.create(Phaser.Scene.prototype);
+GameScene.prototype.constructor = GameScene;
+
+const GRID_COLS = 3;
+const GRID_ROWS = 3;
+const FEED_W = 270;
+const FEED_H = 175;
+const GRID_START_X = 60;
+const GRID_START_Y = 90;
+
+const AREA_NAMES = [
+    'CAM 01 — ASSEMBLY', 'CAM 02 — LOADING', 'CAM 03 — WELDING',
+    'CAM 04 — STORAGE', 'CAM 05 — POWER CORE', 'CAM 06 — CORRIDOR A',
+    'CAM 07 — PACKAGING', 'CAM 08 — CORRIDOR B', 'CAM 09 — EXIT BAY'
+];
+
+const COLORS = {
+    red: 0xb83838, green: 0x4a9850, blue: 0x4a7ab0,
+    black: 0x1a1a1a, yellow: 0xc8b040, gray: 0x888888, brown: 0x7a5a3a
+};
+
+const NEUTRAL_COLORS = ['gray', 'brown'];
+const SKIN_TONES = [0x8a6a4a, 0x9a7a5a, 0xaa8a6a, 0x6a4a2a, 0x7a5a3a, 0xba9a7a];
+
+const VIOLATION_TRIOS = [
+    ['red', 'green', 'blue'],
+    ['red', 'red', 'green']
+];
+
+const DECOY_TRIOS = [
+    ['green', 'blue', 'red'], ['blue', 'green', 'red'], ['green', 'red', 'blue'],
+    ['blue', 'red', 'green'], ['red', 'red', 'blue'], ['red', 'blue', 'red'],
+    ['blue', 'red', 'red'], ['green', 'green', 'red'], ['green', 'red', 'green'],
+    ['red', 'green', 'red']
+];
+
+const RADIO_LINES = [
+    "Cam five, anything to report?", "All quiet on perimeter.",
+    "Maintenance crew clear of sector three.", "Stay sharp out there.",
+    "Dispatch, copy that.", "Possible movement near loading bay.",
+    "Status report, over.", "Routine patrol, no anomalies.",
+    "Watch corridor B.", "Confirmed visual, all clear."
+];
+
+GameScene.prototype.create = function() {
+    const scene = this;
+    this.cameras.main.fadeIn(500, 0, 0, 0);
+    
+    this.score = 0;
+    this.cameras_arr = [];
+    this.people = [];
+    this.gameOver = false;
+    this.startTime = this.time.now;
+    this.levelData = LEVELS[GAME.currentLevel - 1];
+    this.levelEndTime = this.levelData.duration > 0 ? this.time.now + this.levelData.duration * 1000 : Infinity;
+    this.isPaused = false;
+    this.pauseOverlay = null;
+    this.pauseTexts = [];
+    
+    startMusic(this.levelData.musicIntensity);
+    
+    this.add.rectangle(640, 380, 1280, 760, 0x05080c);
+    
+    for (let i = 0; i < 9; i++) {
+        this.add.rectangle(70 + i * 150, 380, 1, 760, 0x0e1218, 0.5);
+    }
+    this.add.rectangle(640, 30, 1280, 60, 0x1a2a40, 0.3);
+    this.add.rectangle(640, 25, 1280, 50, 0x0a0e14);
+    this.add.rectangle(640, 50, 1280, 1, 0x2a3a4a);
+    this.add.text(20, 12, '■ 04:23 — OPERATOR TERMINAL', {
+        fontSize: '16px', color: '#a0b0c0', fontFamily: 'monospace'
+    });
+    this.add.text(900, 12, 'LVL ' + this.levelData.num + ' — ' + this.levelData.title, {
+        fontSize: '14px', color: '#e0c060', fontFamily: 'monospace'
+    });
+    
+    const recDot = this.add.circle(870, 25, 4, 0xff3030);
+    this.add.text(880, 18, 'REC', { fontSize: '12px', color: '#ff3030', fontFamily: 'monospace' });
+    this.tweens.add({ targets: recDot, alpha: 0.3, duration: 800, yoyo: true, repeat: -1 });
+    
+    // Pause button
+    const pauseBg = this.add.rectangle(1140, 25, 80, 30, 0x14181f).setInteractive();
+    pauseBg.setStrokeStyle(1, 0x3a4252);
+    this.pauseBtnText = this.add.text(1140, 25, '⏸ PAUSE', {
+        fontSize: '12px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    this.pauseBg = pauseBg;
+    pauseBg.on('pointerdown', () => scene.togglePause());
+    
+    // Mute button
+    const muteBg = this.add.rectangle(1230, 25, 80, 30, 0x14181f).setInteractive();
+    muteBg.setStrokeStyle(1, 0x3a4252);
+    const muteText = this.add.text(1230, 25, musicMuted ? '🔇 MUTED' : '🔊 SOUND', {
+        fontSize: '12px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    muteBg.on('pointerdown', () => {
+        const isMuted = toggleMute();
+        muteText.setText(isMuted ? '🔇 MUTED' : '🔊 SOUND');
+        playBeep(600, 0.05, 'square', 0.1);
+    });
+    
+    // Keyboard pause
+    this.input.keyboard.on('keydown-P', () => scene.togglePause());
+    this.input.keyboard.on('keydown-ESC', () => scene.togglePause());
+    
+    // Monitor wall
+    for (let row = 0; row < GRID_ROWS; row++) {
+        for (let col = 0; col < GRID_COLS; col++) {
+            const i = row * GRID_COLS + col;
+            const x = GRID_START_X + col * (FEED_W + 30);
+            const y = GRID_START_Y + row * (FEED_H + 30);
+            
+            this.add.rectangle(x + FEED_W/2, y + FEED_H/2, FEED_W + 24, FEED_H + 24, 0x1a1e24);
+            this.add.rectangle(x + FEED_W/2, y + FEED_H/2, FEED_W + 18, FEED_H + 18, 0x0e1218);
+            this.add.rectangle(x + FEED_W/2, y - 10, FEED_W + 18, 1, 0x3a4252);
+            this.add.rectangle(x + FEED_W/2, y + FEED_H + 10, FEED_W + 18, 1, 0x000000);
+            this.add.text(x + FEED_W/2, y + FEED_H + 14, 'CCTV-' + String(i+1).padStart(2,'0'), {
+                fontSize: '8px', color: '#3a4252', fontFamily: 'monospace'
+            }).setOrigin(0.5);
+            
+            const monRec = this.add.circle(x + FEED_W - 15, y - 10, 2, 0xff3030);
+            this.tweens.add({
+                targets: monRec, alpha: 0.2,
+                duration: 600 + Math.random() * 400, yoyo: true, repeat: -1
+            });
+            
+            this.add.rectangle(x + FEED_W/2, y + FEED_H/2, FEED_W, FEED_H, 0x2a3642);
+            this.add.rectangle(x + FEED_W/2, y + FEED_H - 28, FEED_W - 4, 56, 0x3a4652);
+            this.add.rectangle(x + FEED_W/2, y + FEED_H - 56, FEED_W - 4, 1, 0x1a2230);
+            
+            this.add.rectangle(x + 20, y + FEED_H - 50, 24, 80, 0x0a0e14);
+            this.add.rectangle(x + 20, y + FEED_H - 90, 24, 1, 0x2a3a4a);
+            this.add.rectangle(x + 32, y + FEED_H - 50, 4, 80, 0x000000, 0.4);
+            this.add.rectangle(x + FEED_W - 20, y + FEED_H - 50, 24, 80, 0x0a0e14);
+            this.add.rectangle(x + FEED_W - 20, y + FEED_H - 90, 24, 1, 0x2a3a4a);
+            this.add.rectangle(x + FEED_W - 32, y + FEED_H - 50, 4, 80, 0x000000, 0.4);
+            
+            const propType = i % 3;
+            if (propType === 0) {
+                this.add.rectangle(x + FEED_W/2 - 30, y + FEED_H - 75, 24, 35, 0x1f2a36);
+                this.add.rectangle(x + FEED_W/2 - 30, y + FEED_H - 80, 20, 1, 0x4a6a8a, 0.6);
+                this.add.rectangle(x + FEED_W/2 + 35, y + FEED_H - 65, 28, 25, 0x1f2a36);
+            } else if (propType === 1) {
+                this.add.rectangle(x + FEED_W/2 - 25, y + FEED_H - 60, 22, 18, 0x2a2014);
+                this.add.rectangle(x + FEED_W/2 - 5, y + FEED_H - 65, 20, 22, 0x2a2014);
+                this.add.rectangle(x + FEED_W/2 + 30, y + FEED_H - 70, 24, 28, 0x2a2014);
+            } else {
+                this.add.rectangle(x + FEED_W/2, y + FEED_H - 95, FEED_W - 60, 4, 0x2a3a4a);
+                this.add.rectangle(x + FEED_W/2 - 40, y + FEED_H - 80, 4, 20, 0x2a3a4a);
+                this.add.rectangle(x + FEED_W/2 + 40, y + FEED_H - 80, 4, 20, 0x2a3a4a);
+            }
+            
+            for (let n = 0; n < 12; n++) {
+                this.add.rectangle(
+                    x + 10 + Math.random() * (FEED_W - 20),
+                    y + 25 + Math.random() * (FEED_H - 35),
+                    1, 1, 0xffffff, 0.06
+                );
+            }
+            for (let s = 0; s < 7; s++) {
+                this.add.rectangle(x + FEED_W/2, y + 25 + s * 25, FEED_W - 4, 1, 0x000000, 0.18);
+            }
+            this.add.rectangle(x + 12, y + FEED_H/2, 24, FEED_H - 8, 0x000000, 0.3);
+            this.add.rectangle(x + FEED_W - 12, y + FEED_H/2, 24, FEED_H - 8, 0x000000, 0.3);
+            
+            this.add.text(x + 8, y + 6, AREA_NAMES[i], {
+                fontSize: '9px', color: '#c0d0e0', fontFamily: 'monospace'
+            });
+            this.add.text(x + 8, y + FEED_H - 14, '● REC', {
+                fontSize: '8px', color: '#ff3030', fontFamily: 'monospace'
+            });
+            
+            const timestamp = this.add.text(x + FEED_W - 75, y + 6, '04:00:00', {
+                fontSize: '9px', color: '#c0d0e0', fontFamily: 'monospace'
+            });
+            const fpsText = this.add.text(x + FEED_W - 30, y + FEED_H - 14, '30FPS', {
+                fontSize: '8px', color: '#a0b0c0', fontFamily: 'monospace'
+            });
+            
+            const flashBorder = this.add.rectangle(x + FEED_W/2, y + FEED_H/2, FEED_W, FEED_H);
+            flashBorder.setStrokeStyle(4, 0x00ff41, 0);
+            
+            const zone = this.add.zone(x + FEED_W/2, y + FEED_H/2, FEED_W, FEED_H).setInteractive();
+            
+            const camera = {
+                index: i, x: x, y: y, zone: zone, flashBorder: flashBorder,
+                timestamp: timestamp, fpsText: fpsText,
+                bounds: { x: x + 10, y: y + 30, w: FEED_W - 20, h: FEED_H - 50 },
+                doorLeft: x + 32, doorRight: x + FEED_W - 32,
+                busy: false,
+                cooldownUntil: this.time.now + 2000 + Math.random() * 4000,
+                alertSent: false, alertOverlay: null, alertOverlayText: null, alertSweepText: null
+            };
+            
+            zone.on('pointerdown', () => {
+                if (scene.gameOver) return;
+                if (scene.isPaused) return;
+                scene.handleFeedClick(camera);
+            });
+            
+            this.cameras_arr.push(camera);
+        }
+    }
+    
+    this.buildReferencePanel();
+    
+    // Desk
+    const deskY = 670;
+    this.add.rectangle(640, deskY + 10, 1280, 100, 0x1a1612);
+    this.add.rectangle(640, deskY - 30, 1280, 2, 0x2a2620);
+    this.add.rectangle(640, deskY + 20, 280, 30, 0x0e0a08);
+    this.add.rectangle(640, deskY + 20, 280, 30).setStrokeStyle(1, 0x2a2620);
+    for (let k = 0; k < 14; k++) {
+        this.add.rectangle(510 + k * 19, deskY + 12, 16, 8, 0x1a1612);
+        this.add.rectangle(510 + k * 19, deskY + 24, 16, 8, 0x1a1612);
+    }
+    this.add.ellipse(580, deskY + 18, 50, 25, 0x2a1e14);
+    this.add.ellipse(700, deskY + 18, 50, 25, 0x2a1e14);
+    this.add.rectangle(580, deskY + 35, 40, 15, 0x2a1e14);
+    this.add.rectangle(700, deskY + 35, 40, 15, 0x2a1e14);
+    this.add.rectangle(880, deskY + 5, 30, 35, 0x3a2620);
+    this.add.rectangle(880, deskY - 12, 28, 3, 0x4a3630);
+    this.add.rectangle(880, deskY - 12, 18, 1, 0x6a4640);
+    this.add.rectangle(900, deskY + 5, 6, 18, 0x3a2620);
+    this.add.rectangle(280, deskY + 15, 80, 50, 0xc0a060);
+    this.add.rectangle(280, deskY + 15, 80, 50).setStrokeStyle(1, 0x806030);
+    for (let l = 0; l < 5; l++) {
+        this.add.rectangle(280, deskY + l * 8 - 2, 60, 1, 0x806030, 0.4);
+    }
+    this.add.rectangle(305, deskY + 5, 30, 2, 0x1a1612);
+    this.add.circle(1000, deskY - 10, 60, 0xe0a060, 0.05);
+    this.add.circle(1000, deskY - 10, 30, 0xe0a060, 0.08);
+    this.add.rectangle(1000, deskY + 5, 25, 30, 0x1a1612);
+    
+    // HUD
+    this.add.rectangle(640, 735, 1280, 50, 0x0a0e14);
+    this.add.rectangle(640, 710, 1280, 1, 0x2a3a4a);
+    
+    this.scoreText = this.add.text(20, 725, 'SCORE: 0', {
+        fontSize: '15px', color: '#a0e0a0', fontFamily: 'monospace'
+    });
+    this.targetText = this.add.text(140, 725, this.levelData.minScore > 0 ? 'TARGET: ' + this.levelData.minScore : 'ENDLESS', {
+        fontSize: '15px', color: '#e0c060', fontFamily: 'monospace'
+    });
+    this.violationText = this.add.text(290, 725, 'MISSED: 0/10', {
+        fontSize: '15px', color: '#e08080', fontFamily: 'monospace'
+    });
+    this.timeText = this.add.text(450, 725, this.levelData.duration > 0 ? 'TIME: ' + this.levelData.duration : '∞', {
+        fontSize: '15px', color: '#a0b0c0', fontFamily: 'monospace'
+    });
+    this.statusText = this.add.text(600, 725, 'MONITORING...', {
+        fontSize: '13px', color: '#e0c060', fontFamily: 'monospace'
+    });
+    this.add.text(1010, 725, 'Lvl ' + this.levelData.num + '/7', {
+        fontSize: '13px', color: '#e0c060', fontFamily: 'monospace'
+    });
+    this.add.text(1100, 725, '@toluszn', {
+        fontSize: '11px', color: '#3a4252', fontFamily: 'monospace'
+    });
+    
+    this.time.addEvent({ delay: 1000, loop: true, callback: () => scene.updateTimestamps() });
+    this.time.addEvent({
+        delay: 12000, loop: true,
+        callback: () => {
+            if (!scene.gameOver && !scene.isPaused && Math.random() < 0.7) {
+                radioVoice(Phaser.Utils.Array.GetRandom(RADIO_LINES));
+                playBeep(2000, 0.05, 'square', 0.04);
+            }
+        }
+    });
+    this.time.addEvent({
+        delay: 100, loop: true,
+        callback: () => {
+            scene.cameras_arr.forEach(cam => {
+                cam.fpsText.setText((28 + Math.floor(Math.random() * 4)) + 'FPS');
+            });
+        }
+    });
+};
+
+GameScene.prototype.togglePause = function() {
+    if (this.gameOver) return;
+    
+    if (!this.isPaused) {
+        this.isPaused = true;
+        
+        this.pauseOverlay = this.add.rectangle(640, 380, 1280, 760, 0x000000, 0.75);
+        this.pauseOverlay.setDepth(1000);
+        const pausedText = this.add.text(640, 320, '⏸ PAUSED', {
+            fontSize: '52px', color: '#e0c060', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        pausedText.setDepth(1001);
+        const resumeText = this.add.text(640, 400, 'Press P or ESC or click RESUME to continue', {
+            fontSize: '16px', color: '#c0d0e0', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        resumeText.setDepth(1001);
+        
+        // Resume button (large, on overlay) — works while scene is paused
+        const resumeBtn = this.add.rectangle(640, 470, 220, 50, 0x1a2230);
+        resumeBtn.setStrokeStyle(2, 0xe0c060);
+        resumeBtn.setDepth(1001);
+        resumeBtn.setInteractive({ useHandCursor: true });
+        const resumeBtnText = this.add.text(640, 470, '▶ RESUME', {
+            fontSize: '18px', color: '#e0c060', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        resumeBtnText.setDepth(1002);
+        
+        const scene = this;
+        resumeBtn.on('pointerdown', () => scene.togglePause());
+        
+        this.pauseTexts = [pausedText, resumeText, resumeBtn, resumeBtnText];
+        
+        // Pause music
+        if (musicInterval) {
+            clearInterval(musicInterval);
+            musicInterval = null;
+        }
+        
+        // Use DOM keyboard handler — works even when Phaser scene is paused
+        this.domKeyHandler = (e) => {
+            if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
+                scene.togglePause();
+            }
+        };
+        window.addEventListener('keydown', this.domKeyHandler);
+        
+        this.scene.pause();
+        if (this.pauseBtnText) this.pauseBtnText.setText('▶ RESUME');
+        playBeep(400, 0.08, 'square', 0.1);
+    } else {
+        this.isPaused = false;
+        this.scene.resume();
+        
+        // Remove DOM keyboard handler
+        if (this.domKeyHandler) {
+            window.removeEventListener('keydown', this.domKeyHandler);
+            this.domKeyHandler = null;
+        }
+        
+        if (this.pauseOverlay) this.pauseOverlay.destroy();
+        this.pauseTexts.forEach(t => t.destroy());
+        this.pauseTexts = [];
+        this.pauseOverlay = null;
+        
+        startMusic(this.levelData.musicIntensity);
+        if (this.pauseBtnText) this.pauseBtnText.setText('⏸ PAUSE');
+        playBeep(700, 0.08, 'square', 0.1);
+    }
+};
+
+GameScene.prototype.buildReferencePanel = function() {
+    const panelX = 1010;
+    const panelY = 90;
+    const panelW = 250;
+    const panelH = 540;
+    
+    this.add.rectangle(panelX + panelW/2, panelY + panelH/2, panelW, panelH, 0x0a0e14);
+    this.add.rectangle(panelX + panelW/2, panelY + panelH/2, panelW, panelH).setStrokeStyle(2, 0x3a4252);
+    this.add.rectangle(panelX + panelW/2, panelY + 20, panelW, 35, 0x14181f);
+    this.add.text(panelX + panelW/2, panelY + 20, '⚠ WANTED PROFILES', {
+        fontSize: '13px', color: '#e0c060', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    
+    let entryY = panelY + 60;
+    const rules = this.levelData.rules;
+    
+    if (rules.black) { this.drawWantedEntry(panelX + 20, entryY, ['black'], 'ALL BLACK', 'Lone intruder'); entryY += 70; }
+    if (rules.rgb) { this.drawWantedEntry(panelX + 20, entryY, ['red', 'green', 'blue'], 'R-G-B TRIO', 'In this exact order'); entryY += 70; }
+    if (rules.rrg) { this.drawWantedEntry(panelX + 20, entryY, ['red', 'red', 'green'], 'R-R-G TRIO', 'In this exact order'); entryY += 70; }
+    if (rules.soloYellow) { this.drawWantedEntry(panelX + 20, entryY, ['yellow'], 'SOLO YELLOW', 'Alone on screen'); entryY += 70; }
+    if (rules.bluePair) { this.drawWantedEntry(panelX + 20, entryY, ['blue', 'blue'], 'BLUE-BLUE', 'Walking together'); entryY += 70; }
+    
+    const footerY = panelY + panelH - 40;
+    this.add.text(panelX + panelW/2, footerY, 'CLICK FEED TO FLAG', {
+        fontSize: '11px', color: '#a0b0c0', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+    this.add.text(panelX + panelW/2, footerY + 18, 'WATCH FOR DECOYS', {
+        fontSize: '10px', color: '#e08080', fontFamily: 'monospace'
+    }).setOrigin(0.5);
+};
+
+GameScene.prototype.drawWantedEntry = function(x, y, colors, label, hint) {
+    colors.forEach((c, idx) => {
+        const px = x + 15 + idx * 22;
+        const py = y + 12;
+        this.add.circle(px, py - 12, 3, 0xaa8a6a);
+        this.add.rectangle(px, py, 8, 12, COLORS[c]);
+        this.add.rectangle(px - 2, py + 9, 2, 6, 0x2a3040);
+        this.add.rectangle(px + 2, py + 9, 2, 6, 0x2a3040);
+    });
+    this.add.text(x + 90, y, label, { fontSize: '12px', color: '#a0e0a0', fontFamily: 'monospace' });
+    this.add.text(x + 90, y + 16, hint, { fontSize: '9px', color: '#607080', fontFamily: 'monospace' });
+};
+
+GameScene.prototype.updateTimestamps = function() {
+    const elapsed = Math.floor((this.time.now - this.startTime) / 1000);
+    this.cameras_arr.forEach((cam, i) => {
+        const totalSecs = (i * 60) + elapsed;
+        const m = Math.floor(totalSecs / 60) % 60;
+        const s = totalSecs % 60;
+        cam.timestamp.setText('04:' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0'));
+    });
+};
+
+GameScene.prototype.shouldHaveBlack = function() {
+    if (!this.levelData.rules.black) return false;
+    return Math.random() < 0.22;
+};
+
+GameScene.prototype.trySpawnOnCamera = function(cam) {
+    if (cam.busy) return;
+    if (cam.alertSent) return;
+    if (this.time.now < cam.cooldownUntil) return;
+    const roll = Math.random();
+    if (roll < 0.5) this.spawnSingle(cam);
+    else if (roll < 0.75) this.spawnPair(cam);
+    else this.spawnTrio(cam);
+};
+
+GameScene.prototype.spawnSingle = function(cam) {
+    const fromLeft = Math.random() > 0.5;
+    let color;
+    if (this.shouldHaveBlack()) color = 'black';
+    else if (this.levelData.rules.soloYellow && Math.random() < 0.18) color = 'yellow';
+    else color = Phaser.Utils.Array.GetRandom(NEUTRAL_COLORS);
+    
+    cam.busy = true;
+    this.createPerson(cam, color, fromLeft, null, false, () => {
+        cam.busy = false;
+        cam.cooldownUntil = this.time.now + this.levelData.spawnCooldownMin + Math.random() * this.levelData.spawnCooldownRange;
+    });
+};
+
+GameScene.prototype.spawnPair = function(cam) {
+    const fromLeft = Math.random() > 0.5;
+    let colors;
+    let isBluePair = false;
+    const r = Math.random();
+    
+    if (this.levelData.rules.bluePair && r < 0.25) {
+        colors = ['blue', 'blue'];
+        isBluePair = true;
+    } else if (this.shouldHaveBlack()) {
+        const other = Phaser.Utils.Array.GetRandom(NEUTRAL_COLORS.concat(['red','green','blue']));
+        colors = Math.random() < 0.5 ? ['black', other] : [other, 'black'];
+    } else {
+        const all = NEUTRAL_COLORS.concat(['red', 'green', 'blue']);
+        colors = [Phaser.Utils.Array.GetRandom(all), Phaser.Utils.Array.GetRandom(all)];
+        if (this.levelData.rules.bluePair && colors[0] === 'blue' && colors[1] === 'blue') {
+            colors[1] = Phaser.Utils.Array.GetRandom(NEUTRAL_COLORS);
+        }
+    }
+    
+    cam.busy = true;
+    let active = 0;
+    const spacing = 1100;
+    const pairId = isBluePair ? 'bp_' + Date.now() + '_' + Math.random() : null;
+    
+    colors.forEach((color, idx) => {
+        this.time.delayedCall(idx * spacing, () => {
+            if (this.gameOver) return;
+            active++;
+            this.createPerson(cam, color, fromLeft, pairId, isBluePair, () => {
+                active--;
+                if (active === 0) {
+                    cam.busy = false;
+                    cam.cooldownUntil = this.time.now + this.levelData.spawnCooldownMin + Math.random() * this.levelData.spawnCooldownRange;
+                }
+            });
+        });
+    });
+};
+
+GameScene.prototype.spawnTrio = function(cam) {
+    const fromLeft = Math.random() > 0.5;
+    let colors;
+    let groupId = null;
+    const r = Math.random();
+    const decoyChance = this.levelData.decoy;
+    const allowedViolations = [];
+    if (this.levelData.rules.rgb) allowedViolations.push(['red','green','blue']);
+    if (this.levelData.rules.rrg) allowedViolations.push(['red','red','green']);
+    
+    if (allowedViolations.length > 0 && r < 0.3) {
+        colors = [...Phaser.Utils.Array.GetRandom(allowedViolations)];
+        groupId = 'g_' + Date.now() + '_' + Math.random();
+    } else if (r < 0.3 + decoyChance) {
+        colors = [...Phaser.Utils.Array.GetRandom(DECOY_TRIOS)];
+    } else {
+        const all = NEUTRAL_COLORS.concat(['red', 'green', 'blue']);
+        colors = [Phaser.Utils.Array.GetRandom(all), Phaser.Utils.Array.GetRandom(all), Phaser.Utils.Array.GetRandom(all)];
+        if (this.shouldHaveBlack()) colors[Math.floor(Math.random() * 3)] = 'black';
+    }
+    
+    cam.busy = true;
+    let active = 0;
+    const spacing = 1100;
+    
+    colors.forEach((color, idx) => {
+        this.time.delayedCall(idx * spacing, () => {
+            if (this.gameOver) return;
+            active++;
+            this.createPerson(cam, color, fromLeft, groupId, false, () => {
+                active--;
+                if (active === 0) {
+                    cam.busy = false;
+                    cam.cooldownUntil = this.time.now + this.levelData.spawnCooldownMin + Math.random() * this.levelData.spawnCooldownRange;
+                }
+            });
+        });
+    });
+};
+
+GameScene.prototype.createPerson = function(cam, color, fromLeft, groupId, isBluePair, onExit) {
+    const startX = fromLeft ? cam.doorLeft : cam.doorRight;
+    const endX = fromLeft ? cam.doorRight + 30 : cam.doorLeft - 30;
+    const groundY = cam.bounds.y + cam.bounds.h - 5;
+    const outfitColor = COLORS[color];
+    const skinColor = color === 'black' ? 0x5a5a5a : Phaser.Utils.Array.GetRandom(SKIN_TONES);
+    const pantsColor = color === 'black' ? 0x1a1a1a : 0x2a3040;
+    
+    const container = this.add.container(startX, groundY);
+    container.setAlpha(0);
+    
+    const head = this.add.circle(0, -38, 4, skinColor);
+    const neck = this.add.rectangle(0, -33, 3, 3, skinColor);
+    const torso = this.add.rectangle(0, -24, 10, 14, outfitColor);
+    const armLeft = this.add.rectangle(-6, -28, 3, 12, outfitColor);
+    armLeft.setOrigin(0.5, 0);
+    const armRight = this.add.rectangle(6, -28, 3, 12, outfitColor);
+    armRight.setOrigin(0.5, 0);
+    const legLeft = this.add.rectangle(-2, -16, 3, 14, pantsColor);
+    legLeft.setOrigin(0.5, 0);
+    const legRight = this.add.rectangle(2, -16, 3, 14, pantsColor);
+    legRight.setOrigin(0.5, 0);
+    const shoeLeft = this.add.rectangle(-2, -1, 4, 2, 0x0a0a0a);
+    const shoeRight = this.add.rectangle(2, -1, 4, 2, 0x0a0a0a);
+    
+    container.add([legLeft, legRight, shoeLeft, shoeRight, torso, armLeft, armRight, neck, head]);
+    if (!fromLeft) container.scaleX = -1;
+    this.tweens.add({ targets: container, alpha: 1, duration: 600 });
+    
+    const baseSpeed = (0.4 + (GAME.currentLevel - 1) * 0.025) * this.levelData.speed;
+    
+    const person = {
+        container, armLeft, armRight, legLeft, legRight, shoeLeft, shoeRight,
+        x: startX, y: groundY, endX: endX,
+        speed: fromLeft ? baseSpeed : -baseSpeed,
+        color: color, groupId: groupId, isBluePair: isBluePair,
+        camera: cam, walkPhase: Math.random() * Math.PI * 2,
+        flagged: false, onExit: onExit
+    };
+    this.people.push(person);
+};
+
+GameScene.prototype.handleFeedClick = function(cam) {
+    if (cam.alertSent) {
+        this.statusText.setText('CAM ' + String(cam.index + 1).padStart(2,'0') + ' — ALERT ALREADY SENT');
+        this.statusText.setColor('#e0c060');
+        return;
+    }
+    
+    const onFeed = this.people.filter(p => p.camera.index === cam.index && this.isOnFeed(p));
+    let violatorFound = false;
+    let reason = '';
+    
+    if (this.levelData.rules.black) {
+        const blackPeople = onFeed.filter(p => p.color === 'black');
+        if (blackPeople.length > 0) { violatorFound = true; reason = 'BLACK OUTFIT'; }
+    }
+    if (!violatorFound && this.levelData.rules.soloYellow) {
+        const soloYellow = onFeed.filter(p => p.color === 'yellow' && !p.groupId && !p.isBluePair);
+        if (soloYellow.length > 0 && onFeed.length <= 2) { violatorFound = true; reason = 'SOLO YELLOW'; }
+    }
+    if (!violatorFound && this.levelData.rules.bluePair) {
+        const bluePairs = {};
+        onFeed.forEach(p => {
+            if (p.isBluePair && p.color === 'blue') {
+                if (!bluePairs[p.groupId]) bluePairs[p.groupId] = [];
+                bluePairs[p.groupId].push(p);
+            }
+        });
+        for (const id in bluePairs) {
+            if (bluePairs[id].length >= 2) { violatorFound = true; reason = 'BLUE-BLUE PAIR'; break; }
+        }
+    }
+    if (!violatorFound && (this.levelData.rules.rgb || this.levelData.rules.rrg)) {
+        const groupCounts = {};
+        onFeed.forEach(p => {
+            if (p.groupId) {
+                if (!groupCounts[p.groupId]) groupCounts[p.groupId] = [];
+                groupCounts[p.groupId].push(p);
+            }
+        });
+        for (const gid in groupCounts) {
+            if (groupCounts[gid].length >= 3) { violatorFound = true; reason = 'SUSPICIOUS TRIO'; break; }
+        }
+    }
+    
+    if (violatorFound) {
+        this.score += 10;
+        this.statusText.setText('✓ CAM ' + String(cam.index + 1).padStart(2,'0') + ': ' + reason);
+        this.statusText.setColor('#a0e0a0');
+        this.flashFeed(cam, 0x00ff41);
+        soundCorrect();
+        onFeed.forEach(p => {
+            if (p.color === 'black' || p.groupId || (p.color === 'yellow' && this.levelData.rules.soloYellow)) p.flagged = true;
+        });
+        this.setAlertSent(cam);
+    } else {
+        this.score -= 5;
+        this.statusText.setText('✗ FALSE FLAG ON CAM ' + String(cam.index + 1).padStart(2,'0'));
+        this.statusText.setColor('#e08080');
+        this.flashFeed(cam, 0xff3030);
+        soundWrong();
+    }
+    this.scoreText.setText('SCORE: ' + this.score);
+};
+
+GameScene.prototype.setAlertSent = function(cam) {
+    const scene = this;
+    cam.alertSent = true;
+    cam.busy = true;
+    const peopleOnCam = this.people.filter(p => p.camera.index === cam.index);
+    peopleOnCam.forEach(p => {
+        const sprintMultiplier = 4;
+        p.speed = p.speed > 0 ? Math.abs(p.speed) * sprintMultiplier : -Math.abs(p.speed) * sprintMultiplier;
+        p.flagged = true;
+    });
+    
+    const dim = this.add.rectangle(cam.x + FEED_W/2, cam.y + FEED_H/2, FEED_W, FEED_H, 0x000000, 0.6);
+    const alertText = this.add.text(cam.x + FEED_W/2, cam.y + FEED_H/2 - 15, '✓ ALERT SENT', {
+        fontSize: '16px', color: '#a0e0a0', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3
+    }).setOrigin(0.5);
+    const sweepText = this.add.text(cam.x + FEED_W/2, cam.y + FEED_H/2 + 10, 'SECURITY SWEEPING...', {
+        fontSize: '11px', color: '#e0c060', fontFamily: 'monospace', stroke: '#000', strokeThickness: 2
+    }).setOrigin(0.5);
+    
+    cam.alertOverlay = dim;
+    cam.alertOverlayText = alertText;
+    cam.alertSweepText = sweepText;
+    
+    this.time.delayedCall(5000, () => {
+        if (cam.alertOverlay) cam.alertOverlay.destroy();
+        if (cam.alertOverlayText) cam.alertOverlayText.destroy();
+        if (cam.alertSweepText) cam.alertSweepText.destroy();
+        cam.alertOverlay = null;
+        cam.alertOverlayText = null;
+        cam.alertSweepText = null;
+        cam.alertSent = false;
+        cam.busy = false;
+        cam.cooldownUntil = scene.time.now + 1500;
+    });
+};
+
+GameScene.prototype.flashFeed = function(cam, color) {
+    cam.flashBorder.setStrokeStyle(4, color, 1);
+    setTimeout(() => { cam.flashBorder.setStrokeStyle(4, color, 0); }, 400);
+};
+
+GameScene.prototype.isOnFeed = function(p) {
+    const b = p.camera.bounds;
+    return p.x >= b.x && p.x <= b.x + b.w;
+};
+
+GameScene.prototype.update = function(time, delta) {
+    if (this.gameOver || this.isPaused) return;
+    
+    if (this.levelData.duration > 0) {
+        const remaining = Math.max(0, Math.ceil((this.levelEndTime - this.time.now) / 1000));
+        this.timeText.setText('TIME: ' + remaining);
+        if (remaining <= 0) {
+            this.completeLevel();
+            return;
+        }
+    }
+    
+    this.cameras_arr.forEach(cam => this.trySpawnOnCamera(cam));
+    
+    for (let i = this.people.length - 1; i >= 0; i--) {
+        const p = this.people[i];
+        p.x += p.speed;
+        p.container.x = p.x;
+        p.walkPhase += 0.08;
+        const swing = Math.sin(p.walkPhase) * 25;
+        p.legLeft.angle = swing;
+        p.legRight.angle = -swing;
+        p.shoeLeft.x = -2 + Math.sin(p.walkPhase) * 3;
+        p.shoeRight.x = 2 - Math.sin(p.walkPhase) * 3;
+        p.armLeft.angle = -swing * 0.7;
+        p.armRight.angle = swing * 0.7;
+        p.container.y = p.y + Math.abs(Math.sin(p.walkPhase * 2)) * 0.5;
+        
+        const distToEnd = Math.abs(p.endX - p.x);
+        if (distToEnd < 25) p.container.alpha = Math.max(0, distToEnd / 25);
+        
+        const exited = (p.speed > 0 && p.x > p.endX) || (p.speed < 0 && p.x < p.endX);
+        if (exited) {
+            if (!p.flagged) {
+                // BLACK: -3, +1 MISSED (counts toward game over)
+                if (p.color === 'black' && this.levelData.rules.black) {
+                    this.registerMiss();
+                }
+                // GROUP TRIO: -3 score only (last one to exit triggers it)
+                else if (p.groupId && this.levelData.rules.rgb || (p.groupId && this.levelData.rules.rrg)) {
+                    this.registerSilentMiss('TRIO MISSED');
+                    // Mark all teammates flagged so we only trigger once
+                    this.people.forEach(other => {
+                        if (other.groupId === p.groupId) other.flagged = true;
+                    });
+                }
+                // BLUE PAIR: -3 score only
+                else if (p.isBluePair && this.levelData.rules.bluePair) {
+                    this.registerSilentMiss('BLUE PAIR MISSED');
+                    this.people.forEach(other => {
+                        if (other.groupId === p.groupId) other.flagged = true;
+                    });
+                }
+                // SOLO YELLOW: -3 score only (only if it walked alone)
+                else if (p.color === 'yellow' && this.levelData.rules.soloYellow && !p.groupId && !p.isBluePair) {
+                    this.registerSilentMiss('YELLOW MISSED');
+                }
+            }
+            p.container.destroy();
+            if (p.onExit) p.onExit();
+            this.people.splice(i, 1);
+        }
+    }
+};
+
+GameScene.prototype.registerSilentMiss = function(label) {
+    this.score -= 3;
+    this.scoreText.setText('SCORE: ' + this.score);
+    this.statusText.setText('⚠ ' + label);
+    this.statusText.setColor('#e08080');
+    soundMissed();
+};
+
+GameScene.prototype.registerMiss = function() {
+    GAME.totalMissed++;
+    this.violationText.setText('MISSED: ' + GAME.totalMissed + '/10');
+    this.score -= 3;
+    this.scoreText.setText('SCORE: ' + this.score);
+    this.statusText.setText('⚠ INTRUDER MISSED');
+    this.statusText.setColor('#e08080');
+    soundMissed();
+    if (GAME.totalMissed >= 10) this.triggerGameOver(false);
+};
+
+GameScene.prototype.completeLevel = function() {
+    this.gameOver = true;
+    const minScore = this.levelData.minScore || 0;
+    
+    if (this.score < minScore) {
+        this.people.forEach(p => p.container.destroy());
+        this.people = [];
+        this.add.rectangle(640, 380, 1280, 760, 0x000000, 0.85);
+        this.add.text(640, 280, 'INSUFFICIENT FLAGS', {
+            fontSize: '36px', color: '#e08080', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        this.add.text(640, 340, 'TARGET: ' + minScore + '   YOUR SCORE: ' + this.score, {
+            fontSize: '20px', color: '#c0d0e0', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        this.add.text(640, 380, 'REPEAT SHIFT', {
+            fontSize: '24px', color: '#e0c060', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        soundGameOver();
+        this.time.delayedCall(3500, () => {
+            this.cameras.main.fadeOut(600, 0, 0, 0);
+            this.time.delayedCall(700, () => this.scene.start('BriefingScene'));
+        });
+        return;
+    }
+    
+    GAME.totalScore += this.score;
+    soundLevelUp();
+    this.people.forEach(p => p.container.destroy());
+    this.people = [];
+    
+    if (GAME.currentLevel >= LEVELS.length) {
+        this.triggerGameOver(true);
+    } else {
+        GAME.currentLevel++;
+        this.cameras.main.fadeOut(600, 0, 0, 0);
+        this.time.delayedCall(700, () => this.scene.start('BriefingScene'));
+    }
+};
+
+GameScene.prototype.triggerGameOver = function(victory) {
+    this.gameOver = true;
+    stopMusic();
+    GAME.totalScore += this.score;
+    GAME.victory = victory;
+    if (victory) soundLevelUp();
+    else { soundGameOver(); soundAlarm(); }
+    this.cameras.main.fadeOut(800, victory ? 0 : 60, 0, 0);
+    this.time.delayedCall(1000, () => this.scene.start('GameOverScene'));
+};
+
+// ===========================================================
+// GAME OVER SCENE
+// ===========================================================
+function GameOverScene() { Phaser.Scene.call(this, { key: 'GameOverScene' }); }
+GameOverScene.prototype = Object.create(Phaser.Scene.prototype);
+GameOverScene.prototype.constructor = GameOverScene;
+
+GameOverScene.prototype.create = function() {
+    const scene = this;
+    this.cameras.main.fadeIn(700, 0, 0, 0);
+    const victory = GAME.victory;
+    const bgColor = victory ? 0x05080c : 0x180404;
+    this.add.rectangle(640, 380, 1280, 760, bgColor);
+    
+    if (victory) {
+        this.add.text(640, 200, 'SYSTEM RESTORED', {
+            fontSize: '52px', color: '#a0e0a0', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        this.add.text(640, 260, 'The machine learned from you.', {
+            fontSize: '20px', color: '#c0d0e0', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        this.add.text(640, 290, 'Network integrity: 100%', {
+            fontSize: '20px', color: '#c0d0e0', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+    } else {
+        this.add.text(640, 200, 'NETWORK COMPROMISED', {
+            fontSize: '48px', color: '#ff3030', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        const alert = this.add.text(640, 260, '⚠ THE MACHINE COULDN\'T KEEP UP ⚠', {
+            fontSize: '18px', color: '#ff8080', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        this.tweens.add({ targets: alert, alpha: 0.3, duration: 400, yoyo: true, repeat: -1 });
+    }
+    
+    this.add.rectangle(640, 410, 600, 160, 0x0a0e14);
+    this.add.rectangle(640, 410, 600, 160).setStrokeStyle(2, 0x3a4252);
+    this.add.text(640, 360, 'FINAL REPORT', { fontSize: '14px', color: '#e0c060', fontFamily: 'monospace' }).setOrigin(0.5);
+    this.add.text(640, 395, 'TOTAL SCORE: ' + GAME.totalScore, { fontSize: '26px', color: '#a0e0a0', fontFamily: 'monospace' }).setOrigin(0.5);
+    this.add.text(640, 430, 'INTRUDERS MISSED: ' + GAME.totalMissed, { fontSize: '16px', color: '#e08080', fontFamily: 'monospace' }).setOrigin(0.5);
+    this.add.text(640, 460, 'REACHED LEVEL: ' + GAME.currentLevel + ' / 7', { fontSize: '16px', color: '#e0c060', fontFamily: 'monospace' }).setOrigin(0.5);
+    
+    this.add.text(640, 560, '04:23 — by @toluszn', { fontSize: '14px', color: '#607080', fontFamily: 'monospace' }).setOrigin(0.5);
+    this.add.text(640, 585, 'gamedev.js jam 2026 — theme: machines', { fontSize: '11px', color: '#3a4252', fontFamily: 'monospace' }).setOrigin(0.5);
+    
+    this.time.delayedCall(2000, () => {
+        const prompt = scene.add.text(640, 660, '[ CLICK OR PRESS SPACE FOR MENU ]', {
+            fontSize: '16px', color: '#ffffff', fontFamily: 'monospace'
+        }).setOrigin(0.5);
+        scene.tweens.add({ targets: prompt, alpha: 0.3, duration: 600, yoyo: true, repeat: -1 });
+        
+        const restart = () => {
+            GAME.currentLevel = 1;
+            GAME.totalScore = 0;
+            GAME.totalMissed = 0;
+            stopMusic();
+            currentMusicIntensity = 0;
+            scene.cameras.main.fadeOut(500, 0, 0, 0);
+            scene.time.delayedCall(600, () => scene.scene.start('TitleScene'));
+        };
+        scene.input.keyboard.once('keydown-SPACE', restart);
+        scene.input.once('pointerdown', restart);
+    });
+};
+
+const game = new Phaser.Game(config);
+</script>
+</body>
+</html>
